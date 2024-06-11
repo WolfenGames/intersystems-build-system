@@ -1,0 +1,80 @@
+on:
+  push:
+    tags:
+      - v*
+
+name: Wolfengames Build script
+run-name: ${{ github.actor }} initiated a build 🚀
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start Container
+        run: docker-compose up -d
+      
+      - name: Wait for container readiness
+        run: |
+          # Wait for the InterSystems container to be ready
+          while ! docker exec iris iris session IRIS -U %SYS "Write \"Hello World\""; do
+            echo "Waiting for InterSystems container to be ready..."
+            sleep 5
+          done
+          echo "InterSystems container is ready!"
+
+      - name: Copy source files to Docker container
+        run: docker cp ${GITHUB_WORKSPACE}/src/. iris:/tmp/src
+
+      - name: List files in container
+        run: docker exec iris ls -l /tmp/src
+
+      - name: Load files from src directory into IRIS
+        run: |
+          docker exec iris iris session IRIS -U %SYS '##Class(%SYSTEM.OBJ).ImportDir("/tmp/src/","*.cls;*.inc","cuk",,1)' > output.txt
+          cat output.txt
+
+      - name: Fail if INVALID ARGUMENT is found
+        run: |
+          if grep -q '<INVALID ARGUMENT>' output.txt; then
+            echo "Error: INVALID ARGUMENT encountered"
+            exit 1
+          fi
+
+      - name: Export build time...
+        run: |
+          docker exec iris iris session IRIS -U %SYS '##Class(Example.Builder).Build("/tmp/Build/")' > output.txt
+          cat output.txt
+
+      - name: Copy XML files from container to host
+        run: docker cp iris:/tmp/Build/. /tmp/Build/
+
+      - name: List files in /tmp/Build
+        run: ls -l /tmp/Build
+
+      - name: Zip files
+        run: cd /tmp/Build && zip -r /tmp/Build/EXAMPLE_${{ github.ref_name }}.zip .
+
+      - name: Generate release notes
+        run: |
+          releasenotes_file="/tmp/release/releasenotes.md"
+          mkdir -p /tmp/release
+          touch "${releasenotes_file}"
+          tag_count=$(git tag | wc -l)
+          if [ $tag_count -lt 2 ]; then
+            printf "# Releasenotes for EXAMPLE ${{ github.ref_name }}:\n" > "${releasenotes_file}"
+            git log --pretty=format:" - %s" >> "${releasenotes_file}"
+            exit 0
+          fi
+          printf "# Releasenotes for EXAMPLE ${{ github.ref_name }}:\n" > "${releasenotes_file}"
+          git log $(git tag --sort=creatordate | tail -n 2 | head -n 1)..HEAD --pretty=format:" - %s" >> "${releasenotes_file}"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: /tmp/release/releasenotes.md
+          files: |
+            /tmp/Build/EXAMPLE_${{ github.ref_name }}.zip

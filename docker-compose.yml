@@ -1,0 +1,8 @@
+services:
+  Intersystems:
+    container_name: iris
+    hostname: iris.dev.com
+    image: containers.intersystems.com/intersystems/irishealth-community:2023.1
+    ports:
+      - 1973:1972
+      - 59773:52773
